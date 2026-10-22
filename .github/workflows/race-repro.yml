@@ -1,0 +1,80 @@
+name: race-repro
+
+on:
+  push:
+    branches:
+      - 'race-test-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  race:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          uname -a || true
+          go version
+          go env GOOS GOARCH CGO_ENABLED
+          gcc --version || true
+          clang --version || true
+
+      - name: Locate MinGW on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Get-Command gcc -ErrorAction SilentlyContinue) {
+            gcc --version
+            exit 0
+          }
+          $candidates = @(
+            'C:\msys64\mingw64\bin',
+            'C:\mingw64\bin',
+            'C:\Program Files\mingw-w64\x86_64-8.1.0-posix-seh-rt_v6-rev0\mingw64\bin'
+          )
+          foreach ($c in $candidates) {
+            if (Test-Path "$c\gcc.exe") {
+              Write-Output $c | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              & "$c\gcc.exe" --version
+              exit 0
+            }
+          }
+          Write-Output 'gcc not found; go test -race may fail on Windows'
+
+      - name: Run go test -race three times
+        shell: bash
+        run: |
+          set +e
+          fail=0
+          for i in 1 2 3; do
+            echo "===== RUN $i START $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+            go test -race -count=1 -v -run 'TestRace' ./pkg/util/xlog ./client/proxy
+            rc=$?
+            echo "===== RUN $i EXIT $rc $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+            if [ $rc -ne 0 ]; then
+              fail=1
+            fi
+          done
+          exit $fail
